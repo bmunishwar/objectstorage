@@ -200,13 +200,7 @@ function renderBucketAcl(bucket) {
   });
 }
 
-function metaCard(label, value) {
-  return `
-    <div class="border border-slate-800 rounded-lg p-3 bg-slate-925">
-      <p class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">${escapeHtml(label)}</p>
-      <p class="text-slate-100 font-medium truncate" title="${escapeHtml(String(value))}">${escapeHtml(String(value))}</p>
-    </div>`;
-}
+// metaCard() lives in common.js (shared with reports.js).
 
 async function loadObjectsPage(bucket, reset) {
   if (reset) {

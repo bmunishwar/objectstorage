@@ -60,7 +60,7 @@ Then open `http://localhost:8080` in your browser.
 
 ## UI Panels
 
-- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), an **Admin** link to the admin dashboard, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
+- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), **Admin** and **Reports** links, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
 - **Left sidebar** — bucket list (click to switch, `+` to create, hover-trash to delete), storage stats for the active bucket (total size, object count, folder count — auto-refreshes on bucket switch), and the last 10 recent operations with a ✓/✗ status badge and latency in ms.
 - **Main file browser** — clickable breadcrumb, a toolbar (Upload, New Folder, Refresh, Grid/List toggle), and a card or table view of folders and files. Click a folder to navigate in; click/checkbox/shift-click files to multi-select. Drag files from your desktop directly onto the panel to upload them.
 - **Contextual action bar** — appears at the bottom of the main panel once 1+ items are selected: single file gives Download/Copy/Move/Presigned URL/Info/Delete; a folder gives Open/Delete Folder (recursive); multiple items give Bulk Delete.
@@ -71,6 +71,15 @@ Then open `http://localhost:8080` in your browser.
   - **Bucket detail** — click a bucket to see its region, versioning status, creation date, total size, file count, and folder count, plus a paginated, prefix-filterable table of *every* object in the bucket (flat, recursive — not folder-by-folder).
   - **Object detail** — click any object row to see its full metadata (key, bucket, size, content-type, ETag, last-modified, storage class) alongside an inline preview (images, video, audio, PDF, and text/JSON render directly in the page; anything else falls back to a Download button), plus Copy Presigned URL and Delete actions.
   - Navigation uses real URLs (`admin.php?view=bucket&bucket=...`), so back/forward and bookmarking work as expected.
+
+## Reports & Monitoring (`reports.php`)
+
+A live, **current-snapshot** dashboard (no historical trend storage — every load/Refresh recomputes from scratch), linked from both the Explorer and Admin headers:
+
+- **Operations & Health** — parsed straight from `logs/s3-explorer.log`: total operations, success rate, average and max latency, a per-operation breakdown (count + success/failure split + avg latency, as a small bar chart), and a Recent Errors feed (timestamp, operation, message).
+- **Storage & Capacity** — a cross-bucket total: bucket count, combined storage size, combined object count, and a "Buckets by Size" bar list, sorted largest-first, where each bar links straight into that bucket's Admin detail view.
+
+Click **Refresh** any time to recompute both sections. Note the storage section scans every object in every bucket to get exact totals (same approach Admin's own bucket-size view uses per-bucket), so it can take a while on accounts with many or very large buckets.
 
 ## Large Upload Demo (direct-to-S3 multipart)
 
@@ -125,14 +134,16 @@ s3-explorer/
 ├── aws.phar            SDK (download separately, see setup)
 ├── index.php           Main file-browser UI shell
 ├── admin.php           Admin dashboard UI shell (buckets → bucket → object drill-down)
+├── reports.php         Reports & Monitoring UI shell (operations/health + storage/capacity)
 ├── large-upload.php    Large Upload Demo UI shell (direct-to-S3 multipart)
 ├── api.php             All backend operations (JSON in/out)
 ├── config.php          Provider config (env vars, with config.local.php override)
-├── Logger.php          Leveled logger (DEBUG/INFO/SUCCESS/ERROR)
+├── Logger.php          Leveled logger (DEBUG/INFO/SUCCESS/ERROR) + log-stats aggregation
 ├── S3Service.php       All S3 operations (bucket + object + folder + presigned/multipart layer)
 ├── common.js           Shared JS helpers (API caller, formatters, toasts, preview renderer)
 ├── app.js              Main explorer front-end logic
 ├── admin.js            Admin dashboard front-end logic
+├── reports.js          Reports & Monitoring front-end logic
 ├── large-upload.js     Large Upload Demo front-end logic
 ├── logs/
 │   └── s3-explorer.log   Rotating log file (auto-created, auto-rotates at 5MB)

@@ -76,6 +76,15 @@ function toast(type, message) {
   }, 4000);
 }
 
+/** Renders a small labeled stat tile, used by Admin's bucket-metadata grid and the Reports page. */
+function metaCard(label, value) {
+  return `
+    <div class="border border-slate-800 rounded-lg p-3 bg-slate-925">
+      <p class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">${escapeHtml(label)}</p>
+      <p class="text-slate-100 font-medium truncate" title="${escapeHtml(String(value))}">${escapeHtml(String(value))}</p>
+    </div>`;
+}
+
 const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024; // 2MB
 
 /** Renders an inline preview of an object into `el` based on its content-type, falling back to a Download hint. */

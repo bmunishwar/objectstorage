@@ -230,6 +230,10 @@ try {
             resolveRequestOrigin($params)
         ),
 
+        'report_operations' => $logger->computeOperationStats((int) ($params['max_lines'] ?? 5000)),
+
+        'report_storage' => handleStorageReport($service),
+
         default => throw new InvalidArgumentException("Unknown action: {$action}"),
     };
 
@@ -351,5 +355,33 @@ function handleInitMultipartUpload(S3Service $service, array $config, array $par
         'upload_id' => $session['upload_id'],
         'part_size' => $partBytes,
         'parts'     => $presigned['parts'],
+    ];
+}
+
+/** Aggregates a cross-bucket storage total by scanning every object in every bucket (can be slow on large accounts). */
+function handleStorageReport(S3Service $service): array
+{
+    $totalBytes = 0;
+    $totalObjects = 0;
+    $buckets = [];
+
+    foreach ($service->listBuckets() as $bucket) {
+        $size = $service->getBucketSize($bucket['name']);
+        $totalBytes += $size['total_bytes'];
+        $totalObjects += $size['object_count'];
+        $buckets[] = [
+            'name'         => $bucket['name'],
+            'total_bytes'  => $size['total_bytes'],
+            'object_count' => $size['object_count'],
+        ];
+    }
+
+    usort($buckets, static fn (array $a, array $b): int => $b['total_bytes'] <=> $a['total_bytes']);
+
+    return [
+        'total_buckets' => count($buckets),
+        'total_bytes'   => $totalBytes,
+        'total_objects' => $totalObjects,
+        'buckets'       => $buckets,
     ];
 }

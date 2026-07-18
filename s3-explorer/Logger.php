@@ -122,4 +122,74 @@ final class Logger
     {
         return $this->logFile;
     }
+
+    /** Parses the tail of the log file into per-operation counts, latency, and a recent-errors feed. */
+    public function computeOperationStats(int $maxLines = 5000): array
+    {
+        $pattern = '/^\[(?<ts>[^\]]+)\]\s*\[(?<level>\w+)\]\s*(?<op>[A-Z0-9_]+)\s*.*?\x{2192}\s*(?<status>OK|FAILED)\s*\(\s*(?<ms>[\d,.]+)\s*ms\)\s*(?<rest>.*)$/u';
+
+        $byOperation = [];
+        $recentErrors = [];
+        $totalOps = 0;
+        $successCount = 0;
+        $totalMs = 0.0;
+        $maxMs = 0.0;
+
+        foreach ($this->getLastLines($maxLines) as $line) {
+            if (!preg_match($pattern, $line, $m)) {
+                continue;
+            }
+
+            $op = $m['op'];
+            $isSuccess = $m['status'] === 'OK';
+            $ms = (float) str_replace(',', '', $m['ms']);
+
+            $totalOps++;
+            $totalMs += $ms;
+            $maxMs = max($maxMs, $ms);
+            if ($isSuccess) {
+                $successCount++;
+            }
+
+            if (!isset($byOperation[$op])) {
+                $byOperation[$op] = ['count' => 0, 'success' => 0, 'failure' => 0, 'total_ms' => 0.0];
+            }
+            $byOperation[$op]['count']++;
+            $byOperation[$op][$isSuccess ? 'success' : 'failure']++;
+            $byOperation[$op]['total_ms'] += $ms;
+
+            if (!$isSuccess) {
+                $recentErrors[] = [
+                    'timestamp' => $m['ts'],
+                    'operation' => $op,
+                    'message'   => trim($m['rest']),
+                ];
+            }
+        }
+
+        $byOperationSummary = [];
+        foreach ($byOperation as $op => $stats) {
+            $byOperationSummary[$op] = [
+                'count'   => $stats['count'],
+                'success' => $stats['success'],
+                'failure' => $stats['failure'],
+                'avg_ms'  => $stats['count'] > 0 ? round($stats['total_ms'] / $stats['count'], 1) : 0.0,
+            ];
+        }
+        uasort($byOperationSummary, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
+
+        $recentErrors = array_slice(array_reverse($recentErrors), 0, 20);
+
+        return [
+            'total_ops'      => $totalOps,
+            'success_count'  => $successCount,
+            'failure_count'  => $totalOps - $successCount,
+            'success_rate'   => $totalOps > 0 ? round(($successCount / $totalOps) * 100, 1) : 0.0,
+            'avg_latency_ms' => $totalOps > 0 ? round($totalMs / $totalOps, 1) : 0.0,
+            'max_latency_ms' => round($maxMs, 1),
+            'by_operation'   => $byOperationSummary,
+            'recent_errors'  => $recentErrors,
+            'lines_scanned'  => $maxLines,
+        ];
+    }
 }
