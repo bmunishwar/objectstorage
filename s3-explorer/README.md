@@ -60,7 +60,7 @@ Then open `http://localhost:8080` in your browser.
 
 ## UI Panels
 
-- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), an **Admin** link to the admin dashboard, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
+- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), **Admin** and **Large Upload** links to the other two pages, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
 - **Left sidebar** — bucket list (click to switch, `+` to create, hover-trash to delete), storage stats for the active bucket (total size, object count, folder count — auto-refreshes on bucket switch), and the last 10 recent operations with a ✓/✗ status badge and latency in ms.
 - **Main file browser** — clickable breadcrumb, a toolbar (Upload, New Folder, Refresh, Grid/List toggle), and a card or table view of folders and files. Click a folder to navigate in; click/checkbox/shift-click files to multi-select. Drag files from your desktop directly onto the panel to upload them.
 - **Contextual action bar** — appears at the bottom of the main panel once 1+ items are selected: single file gives Download/Copy/Move/Presigned URL/Info/Delete; a folder gives Open/Delete Folder (recursive); multiple items give Bulk Delete.
@@ -71,6 +71,22 @@ Then open `http://localhost:8080` in your browser.
   - **Bucket detail** — click a bucket to see its region, versioning status, creation date, total size, file count, and folder count, plus a paginated, prefix-filterable table of *every* object in the bucket (flat, recursive — not folder-by-folder).
   - **Object detail** — click any object row to see its full metadata (key, bucket, size, content-type, ETag, last-modified, storage class) alongside an inline preview (images, video, audio, PDF, and text/JSON render directly in the page; anything else falls back to a Download button), plus Copy Presigned URL and Delete actions.
   - Navigation uses real URLs (`admin.php?view=bucket&bucket=...`), so back/forward and bookmarking work as expected.
+- **Large Upload Demo** (`large-upload.php`) — a separate page demonstrating secure, direct browser-to-S3 uploads for large files (see below).
+
+## Large Upload Demo (direct-to-S3 multipart)
+
+`large-upload.php` uploads files **straight from the browser to your S3-compatible endpoint** — your AWS secret key is never sent to the browser, and file bytes never pass through the PHP server. This is the same pattern used by the AWS Console, Dropbox, etc., and it sidesteps PHP's `upload_max_filesize`/`post_max_size`/memory limits entirely:
+
+1. The PHP backend (which holds your real credentials) generates short-lived, single-purpose **presigned URLs** — one URL for a small file, or one URL per chunk for a large file.
+2. The browser `PUT`s the file (or each chunk) directly to the S3 endpoint using those URLs.
+3. For large files, chunks upload with limited concurrency and per-chunk retry; if a chunk fails, only that chunk retries, not the whole file. If the upload can't complete, the backend aborts the multipart session so S3 doesn't keep billing for orphaned parts.
+4. Files ≤8MB skip the multipart machinery and use a single presigned `PutObject` URL instead.
+
+**Prerequisite: CORS.** Since the browser talks to your S3 endpoint directly, the bucket needs a CORS rule allowing `PUT`/`GET` from your app's origin and exposing the `ETag` response header (required so the browser can read each chunk's ETag to complete the multipart upload). The page checks this automatically on load and shows a **Fix CORS automatically** button if it's missing — no need to configure this by hand.
+
+Defaults (in `config.php`, overridable via env-style edits): 8MB part size, 5GB max file size, `large-uploads/` key prefix, 1-hour presigned URL expiry. Uploaded filenames are sanitized and prefixed with a timestamp+random token to prevent path traversal and key collisions.
+
+*Not included in this version:* resuming an interrupted upload after a page reload (would require reconciling already-uploaded parts via S3's `ListParts` API on reload) — today, a page refresh mid-upload means starting that file over.
 
 ## Supported S3-Compatible Providers
 
@@ -99,22 +115,26 @@ Then open `http://localhost:8080` in your browser.
 | Blank/unstyled page | No internet access to `cdn.tailwindcss.com` (or your CDN blocked by a firewall/proxy) | Ensure outbound HTTPS to the Tailwind CDN is allowed, or self-host Tailwind |
 | Raw PHP error/stack trace in browser | Should never happen — `api.php` catches all `Throwable`s | File a bug; check `logs/s3-explorer.log` for the real error in the meantime |
 | Presigned URL doesn't work when opened | Clock skew between this server and the S3 endpoint | Sync server time (NTP); presigned URLs are time-signed |
+| Large Upload Demo: chunk `PUT` fails with a network/CORS error | Bucket has no CORS rule for this origin | Use the **Fix CORS automatically** button on `large-upload.php`, or configure it manually (see [above](#large-upload-demo-direct-to-s3-multipart)) |
+| Large Upload Demo: "response was missing an ETag header" | CORS rule exists but doesn't expose `ETag` | Re-run **Fix CORS automatically** (it sets `ExposeHeaders: [ETag]`), or add that to your existing CORS rule manually |
 | `SSL certificate problem` in logs | Self-signed cert on a self-hosted MinIO/Ceph endpoint | Terminate TLS with a trusted cert, or run the endpoint over plain HTTP on a private network |
 
 ## Project Structure
 
 ```
 s3-explorer/
-├── aws.phar          SDK (download separately, see setup)
-├── index.php         Main file-browser UI shell
-├── admin.php         Admin dashboard UI shell (buckets → bucket → object drill-down)
-├── api.php           All backend operations (JSON in/out)
-├── config.php         Provider config (env vars, with config.local.php override)
-├── Logger.php         Leveled logger (DEBUG/INFO/SUCCESS/ERROR)
-├── S3Service.php       All S3 operations (bucket + object + folder layer)
-├── common.js          Shared JS helpers (API caller, formatters, toasts)
-├── app.js             Main explorer front-end logic
-├── admin.js           Admin dashboard front-end logic
+├── aws.phar            SDK (download separately, see setup)
+├── index.php           Main file-browser UI shell
+├── admin.php           Admin dashboard UI shell (buckets → bucket → object drill-down)
+├── large-upload.php    Large Upload Demo UI shell (direct-to-S3 multipart)
+├── api.php             All backend operations (JSON in/out)
+├── config.php          Provider config (env vars, with config.local.php override)
+├── Logger.php          Leveled logger (DEBUG/INFO/SUCCESS/ERROR)
+├── S3Service.php       All S3 operations (bucket + object + folder + presigned/multipart layer)
+├── common.js           Shared JS helpers (API caller, formatters, toasts, preview renderer)
+├── app.js              Main explorer front-end logic
+├── admin.js            Admin dashboard front-end logic
+├── large-upload.js     Large Upload Demo front-end logic
 ├── logs/
 │   └── s3-explorer.log   Rotating log file (auto-created, auto-rotates at 5MB)
 └── downloads/             Temp folder for GET downloads (auto-purged hourly)

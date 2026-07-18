@@ -75,3 +75,44 @@ function toast(type, message) {
     setTimeout(() => el.remove(), 300);
   }, 4000);
 }
+
+const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024; // 2MB
+
+/** Renders an inline preview of an object into `el` based on its content-type, falling back to a Download hint. */
+async function renderPreview(el, info, inlineUrl) {
+  const ct = (info.content_type || '').toLowerCase();
+
+  if (ct.startsWith('image/')) {
+    el.innerHTML = `<img src="${inlineUrl}" alt="${escapeHtml(basename(info.key))}" class="max-w-full max-h-[70vh] object-contain">`;
+    return;
+  }
+  if (ct.startsWith('video/')) {
+    el.innerHTML = `<video src="${inlineUrl}" controls class="max-w-full max-h-[70vh]"></video>`;
+    return;
+  }
+  if (ct.startsWith('audio/')) {
+    el.innerHTML = `<audio src="${inlineUrl}" controls class="w-full px-6"></audio>`;
+    return;
+  }
+  if (ct === 'application/pdf') {
+    el.innerHTML = `<iframe src="${inlineUrl}" class="w-full" style="height:70vh;"></iframe>`;
+    return;
+  }
+  const isTextLike = ct.startsWith('text/') || ['application/json', 'application/xml', 'application/x-yaml', 'application/javascript'].includes(ct);
+  if (isTextLike) {
+    if (info.size > TEXT_PREVIEW_LIMIT) {
+      el.innerHTML = `<p class="text-slate-500 text-sm p-6 text-center">File is ${formatBytes(info.size)} — too large to preview inline. Use Download instead.</p>`;
+      return;
+    }
+    try {
+      const res = await fetch(inlineUrl);
+      const text = await res.text();
+      el.innerHTML = `<pre class="text-xs text-slate-300 p-4 overflow-auto w-full max-h-[70vh] whitespace-pre-wrap break-all">${escapeHtml(text)}</pre>`;
+    } catch {
+      el.innerHTML = `<p class="text-red-400 text-sm p-6">Failed to load preview.</p>`;
+    }
+    return;
+  }
+
+  el.innerHTML = `<p class="text-slate-500 text-sm p-6 text-center">No inline preview available for <span class="text-slate-300">${escapeHtml(info.content_type)}</span>.<br>Use Download to view this file.</p>`;
+}

@@ -206,6 +206,30 @@ try {
 
         'get_logs' => ['lines' => $logger->getLastLines((int) ($params['lines'] ?? 100))],
 
+        'presign_put' => handlePresignPut($service, $config, $params),
+
+        'init_multipart_upload' => handleInitMultipartUpload($service, $config, $params),
+
+        'complete_multipart_upload' => $service->completeMultipartUpload(
+            (string) ($params['bucket'] ?? $config['bucket']),
+            (string) ($params['key'] ?? ''),
+            (string) ($params['upload_id'] ?? ''),
+            (array) ($params['parts'] ?? [])
+        ),
+
+        'abort_multipart_upload' => $service->abortMultipartUpload(
+            (string) ($params['bucket'] ?? $config['bucket']),
+            (string) ($params['key'] ?? ''),
+            (string) ($params['upload_id'] ?? '')
+        ),
+
+        'cors_status' => $service->getBucketCorsStatus((string) ($params['bucket'] ?? $config['bucket'])),
+
+        'enable_cors' => $service->enableBucketCorsForUploads(
+            (string) ($params['bucket'] ?? $config['bucket']),
+            resolveRequestOrigin($params)
+        ),
+
         default => throw new InvalidArgumentException("Unknown action: {$action}"),
     };
 
@@ -233,4 +257,99 @@ function handleUpload(S3Service $service, array $config, array $params): array
     $contentType = (string) ($_FILES['file']['type'] ?? '');
 
     return $service->uploadObject($bucket, $key, $tmpPath, $contentType);
+}
+
+/** Builds a collision-proof, traversal-safe object key under a fixed prefix from a client-supplied filename. */
+function buildUploadKey(string $prefix, string $originalFilename): string
+{
+    $basename = basename(str_replace('\\', '/', $originalFilename));
+    $safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', $basename) ?? '';
+    $safeName = trim($safeName, '._-');
+    if ($safeName === '') {
+        $safeName = 'file';
+    }
+
+    $unique = date('Ymd-His') . '-' . bin2hex(random_bytes(3));
+
+    return rtrim($prefix, '/') . '/' . $unique . '-' . $safeName;
+}
+
+/** Validates a client-declared upload size against the configured max, throwing if it's out of bounds. */
+function assertUploadSizeAllowed(int $size, int $maxBytes): void
+{
+    if ($size <= 0) {
+        throw new InvalidArgumentException('Missing or invalid file size.');
+    }
+    if ($size > $maxBytes) {
+        throw new InvalidArgumentException(
+            sprintf('File is %s, which exceeds the %s upload limit.', formatBytesForError($size), formatBytesForError($maxBytes))
+        );
+    }
+}
+
+/** Formats a byte count for a human-readable error message (server-side counterpart to the JS formatBytes()). */
+function formatBytesForError(int $bytes): string
+{
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $i = $bytes > 0 ? (int) floor(log($bytes, 1024)) : 0;
+    $i = min($i, count($units) - 1);
+    return round($bytes / (1024 ** $i), 1) . ' ' . $units[$i];
+}
+
+/** Resolves the origin to scope a CORS rule to: the browser's Origin header, falling back to a client-supplied value. */
+function resolveRequestOrigin(array $params): string
+{
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? (string) ($params['origin'] ?? '');
+    if ($origin === '') {
+        throw new InvalidArgumentException('Could not determine the request origin to scope the CORS rule to.');
+    }
+    return $origin;
+}
+
+/** Validates and presigns a single-shot PUT URL for a small direct-to-S3 upload. */
+function handlePresignPut(S3Service $service, array $config, array $params): array
+{
+    $bucket = (string) ($params['bucket'] ?? $config['bucket']);
+    $size = (int) ($params['size'] ?? 0);
+    assertUploadSizeAllowed($size, (int) $config['large_upload_max_bytes']);
+
+    $key = buildUploadKey((string) $config['large_upload_prefix'], (string) ($params['filename'] ?? 'upload.bin'));
+    $contentType = (string) ($params['content_type'] ?? 'application/octet-stream');
+
+    $result = $service->presignPutObject($bucket, $key, $contentType, (int) $config['large_upload_presign_expiry']);
+    $result['key'] = $key;
+
+    return $result;
+}
+
+/** Validates a large upload, starts a multipart session, and presigns URLs for every part in one round-trip. */
+function handleInitMultipartUpload(S3Service $service, array $config, array $params): array
+{
+    $bucket = (string) ($params['bucket'] ?? $config['bucket']);
+    $size = (int) ($params['size'] ?? 0);
+    $maxBytes = (int) $config['large_upload_max_bytes'];
+    assertUploadSizeAllowed($size, $maxBytes);
+
+    $partBytes = (int) $config['large_upload_part_bytes'];
+    $partCount = (int) ceil($size / $partBytes);
+    if ($partCount > 10000) {
+        // S3 caps a multipart upload at 10,000 parts; grow the part size instead of the count.
+        $partBytes = (int) ceil($size / 10000);
+        $partCount = (int) ceil($size / $partBytes);
+    }
+
+    $key = buildUploadKey((string) $config['large_upload_prefix'], (string) ($params['filename'] ?? 'upload.bin'));
+    $contentType = (string) ($params['content_type'] ?? 'application/octet-stream');
+    $expiry = (int) $config['large_upload_presign_expiry'];
+
+    $session = $service->createMultipartUpload($bucket, $key, $contentType);
+    $presigned = $service->presignUploadParts($bucket, $key, $session['upload_id'], $partCount, $expiry);
+
+    return [
+        'bucket'    => $bucket,
+        'key'       => $key,
+        'upload_id' => $session['upload_id'],
+        'part_size' => $partBytes,
+        'parts'     => $presigned['parts'],
+    ];
 }

@@ -327,6 +327,154 @@ final class S3Service
     }
 
     // ----------------------------------------------------------------
+    // Direct-to-S3 presigned upload (small file + multipart)
+    // ----------------------------------------------------------------
+
+    /** Generates a single presigned PUT URL for a direct browser-to-S3 upload of one object. */
+    public function presignPutObject(string $bucket, string $key, string $contentType, int $expirySeconds): array
+    {
+        $command = $this->client->getCommand('PutObject', [
+            'Bucket'      => $bucket,
+            'Key'         => $key,
+            'ContentType' => $contentType,
+        ]);
+
+        $request = $this->client->createPresignedRequest($command, "+{$expirySeconds} seconds");
+
+        return [
+            'url'        => (string) $request->getUri(),
+            'expires_in' => $expirySeconds,
+        ];
+    }
+
+    /** Starts a multipart upload session and returns its upload ID. */
+    public function createMultipartUpload(string $bucket, string $key, string $contentType): array
+    {
+        $result = $this->client->createMultipartUpload([
+            'Bucket'      => $bucket,
+            'Key'         => $key,
+            'ContentType' => $contentType,
+        ]);
+
+        return [
+            'bucket'    => $bucket,
+            'key'       => $key,
+            'upload_id' => $result['UploadId'],
+        ];
+    }
+
+    /** Generates a presigned PUT URL for one part of an in-progress multipart upload. */
+    public function presignUploadPart(
+        string $bucket,
+        string $key,
+        string $uploadId,
+        int $partNumber,
+        int $expirySeconds
+    ): array {
+        $command = $this->client->getCommand('UploadPart', [
+            'Bucket'     => $bucket,
+            'Key'        => $key,
+            'UploadId'   => $uploadId,
+            'PartNumber' => $partNumber,
+            'Body'       => '',
+        ]);
+
+        $request = $this->client->createPresignedRequest($command, "+{$expirySeconds} seconds");
+
+        return [
+            'part_number' => $partNumber,
+            'url'         => (string) $request->getUri(),
+        ];
+    }
+
+    /** Generates presigned PUT URLs for every part of a multipart upload in one call. */
+    public function presignUploadParts(
+        string $bucket,
+        string $key,
+        string $uploadId,
+        int $partCount,
+        int $expirySeconds
+    ): array {
+        $parts = [];
+        for ($partNumber = 1; $partNumber <= $partCount; $partNumber++) {
+            $parts[] = $this->presignUploadPart($bucket, $key, $uploadId, $partNumber, $expirySeconds);
+        }
+
+        return ['parts' => $parts];
+    }
+
+    /** Completes a multipart upload given the list of {part_number, etag} pairs collected from the client. */
+    public function completeMultipartUpload(string $bucket, string $key, string $uploadId, array $parts): array
+    {
+        $orderedParts = array_map(
+            static fn (array $part): array => [
+                'PartNumber' => (int) $part['part_number'],
+                'ETag'       => (string) $part['etag'],
+            ],
+            $parts
+        );
+        usort($orderedParts, static fn (array $a, array $b): int => $a['PartNumber'] <=> $b['PartNumber']);
+
+        $result = $this->client->completeMultipartUpload([
+            'Bucket'          => $bucket,
+            'Key'             => $key,
+            'UploadId'        => $uploadId,
+            'MultipartUpload' => ['Parts' => $orderedParts],
+        ]);
+
+        return [
+            'bucket' => $bucket,
+            'key'    => $key,
+            'etag'   => trim((string) ($result['ETag'] ?? ''), '"'),
+        ];
+    }
+
+    /** Aborts an in-progress multipart upload so S3 doesn't keep billing orphaned parts. */
+    public function abortMultipartUpload(string $bucket, string $key, string $uploadId): array
+    {
+        $this->client->abortMultipartUpload([
+            'Bucket'   => $bucket,
+            'Key'      => $key,
+            'UploadId' => $uploadId,
+        ]);
+
+        return ['bucket' => $bucket, 'key' => $key, 'upload_id' => $uploadId, 'aborted' => true];
+    }
+
+    /** Returns whether CORS is configured on a bucket, and its rules if so. */
+    public function getBucketCorsStatus(string $bucket): array
+    {
+        try {
+            $result = $this->client->getBucketCors(['Bucket' => $bucket]);
+            return ['configured' => true, 'rules' => $result['CORSRules'] ?? []];
+        } catch (S3Exception $e) {
+            if ($e->getAwsErrorCode() === 'NoSuchCORSConfiguration') {
+                return ['configured' => false, 'rules' => []];
+            }
+            throw $e;
+        }
+    }
+
+    /** Applies a minimal CORS rule scoped to one origin, enabling direct browser-to-S3 PUT uploads. */
+    public function enableBucketCorsForUploads(string $bucket, string $allowedOrigin): array
+    {
+        $this->client->putBucketCors([
+            'Bucket' => $bucket,
+            'CORSConfiguration' => [
+                'CORSRules' => [[
+                    'AllowedMethods' => ['PUT', 'GET'],
+                    'AllowedOrigins' => [$allowedOrigin],
+                    'AllowedHeaders' => ['*'],
+                    'ExposeHeaders'  => ['ETag'],
+                    'MaxAgeSeconds'  => 3000,
+                ]],
+            ],
+        ]);
+
+        return ['bucket' => $bucket, 'allowed_origin' => $allowedOrigin];
+    }
+
+    // ----------------------------------------------------------------
     // Folder (prefix) operations
     // ----------------------------------------------------------------
 
