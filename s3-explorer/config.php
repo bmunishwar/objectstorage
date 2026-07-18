@@ -22,6 +22,9 @@ $defaults = [
     'large_upload_part_bytes'     => 8 * 1024 * 1024,          // 8MB (S3 minimum part size is 5MB)
     'large_upload_max_bytes'      => 5 * 1024 * 1024 * 1024,   // 5GB demo cap
     'large_upload_presign_expiry' => 3600,
+
+    'pdf_merge_prefix'    => 'merged-pdfs/',
+    'pdf_merge_max_files' => 20,
 ];
 
 return array_merge($defaults, $overrides);

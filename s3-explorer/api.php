@@ -50,10 +50,12 @@ try {
         );
     }
     require_once __DIR__ . '/S3Service.php';
+    require_once __DIR__ . '/PdfMergeService.php';
 
-    $isUpload = isset($_POST['action']) && $_POST['action'] === 'upload';
-    if ($isUpload) {
-        $action = 'upload';
+    $multipartActions = ['upload', 'merge_pdfs'];
+    $isMultipart = isset($_POST['action']) && in_array($_POST['action'], $multipartActions, true);
+    if ($isMultipart) {
+        $action = (string) $_POST['action'];
         $params = $_POST;
     } elseif ($_SERVER['REQUEST_METHOD'] === 'GET') {
         // GET is only used for browser-triggered downloads (file / log), via window.open.
@@ -174,6 +176,8 @@ try {
         ),
 
         'upload' => handleUpload($service, $config, $params),
+
+        'merge_pdfs' => handleMergePdfs($service, $config, $params),
 
         'delete_object' => $service->deleteObject(
             (string) ($params['bucket'] ?? $config['bucket']),
@@ -551,4 +555,82 @@ function probeOperation(callable $fn): array
     } catch (Throwable $e) {
         return ['allowed' => false, 'message' => $e->getMessage(), 'elapsed_ms' => round((microtime(true) - $start) * 1000, 1)];
     }
+}
+
+/** Merges an ordered list of existing S3 objects and/or freshly uploaded files into one PDF, saved back to S3. */
+function handleMergePdfs(S3Service $service, array $config, array $params): array
+{
+    $items = json_decode((string) ($params['items'] ?? '[]'), true);
+    if (!is_array($items) || count($items) === 0) {
+        throw new InvalidArgumentException('No files provided to merge.');
+    }
+
+    $maxFiles = (int) $config['pdf_merge_max_files'];
+    if (count($items) > $maxFiles) {
+        throw new InvalidArgumentException("Cannot merge more than {$maxFiles} files at once.");
+    }
+
+    $destBucket = (string) ($params['bucket'] ?? $config['bucket']);
+    $destKey = buildMergeOutputKey((string) $config['pdf_merge_prefix'], (string) ($params['key'] ?? ''));
+
+    $files = [];
+    $tempFilesToClean = [];
+
+    try {
+        foreach ($items as $item) {
+            $type = (string) ($item['type'] ?? '');
+
+            if ($type === 'existing') {
+                $srcBucket = (string) ($item['bucket'] ?? $destBucket);
+                $srcKey = (string) ($item['key'] ?? '');
+                $downloaded = $service->downloadObject($srcBucket, $srcKey);
+                $tmpPath = tempnam(sys_get_temp_dir(), 'pdf_src_') . '.pdf';
+                file_put_contents($tmpPath, $downloaded['body']);
+                $files[] = ['path' => $tmpPath, 'label' => basename($srcKey)];
+                $tempFilesToClean[] = $tmpPath;
+            } elseif ($type === 'upload') {
+                $field = (string) ($item['field'] ?? '');
+                if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
+                    throw new RuntimeException("Missing or invalid uploaded file for field \"{$field}\".");
+                }
+                $files[] = ['path' => $_FILES[$field]['tmp_name'], 'label' => (string) $_FILES[$field]['name']];
+            } else {
+                throw new InvalidArgumentException("Unknown merge item type: \"{$type}\".");
+            }
+        }
+
+        $mergeService = new PdfMergeService();
+        $result = $mergeService->merge($files);
+        $tempFilesToClean[] = $result['path'];
+
+        $uploadResult = $service->uploadObject($destBucket, $destKey, $result['path'], 'application/pdf');
+
+        return [
+            'bucket'     => $destBucket,
+            'key'        => $destKey,
+            'page_count' => $result['page_count'],
+            'size'       => filesize($result['path']),
+            'etag'       => $uploadResult['etag'],
+        ];
+    } finally {
+        foreach ($tempFilesToClean as $tmpPath) {
+            @unlink($tmpPath);
+        }
+    }
+}
+
+/** Builds a safe .pdf destination key for the merged output under the configured prefix. */
+function buildMergeOutputKey(string $prefix, string $requestedName): string
+{
+    $basename = basename(str_replace('\\', '/', $requestedName));
+    $safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', $basename) ?? '';
+    $safeName = trim($safeName, '._-');
+    if ($safeName === '') {
+        $safeName = 'merged-' . date('Ymd-His') . '.pdf';
+    }
+    if (!str_ends_with(strtolower($safeName), '.pdf')) {
+        $safeName .= '.pdf';
+    }
+
+    return rtrim($prefix, '/') . '/' . $safeName;
 }

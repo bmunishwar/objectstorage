@@ -123,6 +123,16 @@ Object Lock can only be enabled when a bucket is *created* — it cannot be retr
 
 Upload the same filename twice to generate multiple versions, then work through the demo: the versions table lists every version (and delete marker) with View/Manage Lock/Delete actions; the Immutability Controls section lets you set a retention mode (Governance/Compliance) + retain-until date, or toggle a legal hold, on a specific version. The payoff is the **"Try to Delete This Version"** button — with retention or legal hold active, S3 itself refuses the delete, and the app deliberately shows that refusal as a *success* message (🔒 *Blocked as expected*), since the denial is the actual demonstration, not a normal error.
 
+## PDF Merge Demo (`pdf-merge.php`)
+
+Standalone, unlinked page that combines multiple PDFs — a mix of files already sitting in a bucket and/or files uploaded fresh from your computer — into a single merged PDF, saved back to S3 (plus an immediate View/Download link).
+
+Pick files from **From This Bucket** (loads and filters the bucket's objects down to `.pdf` keys) and/or drag PDFs onto **Upload From Your Computer**; every file you add lands in the **Merge Order** list, where ▲/▼ reorders and ✕ removes it — the final PDF's page order follows this list top-to-bottom. Set an output filename and click **Merge PDFs**.
+
+**How it works:** the actual PDF manipulation is done by [FPDI](https://www.setasign.com/products/fpdi/about/) + [FPDF](http://www.fpdf.org/), two small, dependency-free, **MIT-licensed** pure-PHP libraries vendored directly into `pdf-lib/` (no Composer needed at runtime, no system binaries like `pdftk`/`ghostscript` required — same "no build step" philosophy as the rest of the app). Bucket-sourced files are downloaded to a temp file server-side, uploaded files are already local; each is verified to actually start with the PDF magic bytes (`%PDF-`) before being handed to the merger, and all temp files are cleaned up after the merge (whether it succeeds or fails). The output filename is sanitized and forced under the `merged-pdfs/` prefix (configurable in `config.php`, along with a max-files-per-merge cap) to prevent path traversal or overwriting unrelated keys.
+
+*Limitation inherited from FPDI's free tier:* it can't import pages from encrypted PDFs or PDFs using PDF 2.0-only features — covers the vast majority of real-world files, but worth knowing before a demo.
+
 ## Supported S3-Compatible Providers
 
 | Provider | Example Endpoint | Path-style required? |
@@ -165,11 +175,14 @@ s3-explorer/
 ├── large-upload.php    Large Upload Demo UI shell (direct-to-S3 multipart)
 ├── permissions.php     Permissions Matrix Demo UI shell (live per-user probes)
 ├── versioning.php      Versioning & Immutability Demo UI shell (Object Lock/WORM)
+├── pdf-merge.php       PDF Merge Demo UI shell (combine bucket + local PDFs)
 ├── api.php             All backend operations (JSON in/out)
 ├── config.php          Provider config (env vars, with config.local.php override)
 ├── permission-users.php   Demo-user credential roster loader (with permission-users.local.php override)
 ├── Logger.php          Leveled logger (DEBUG/INFO/SUCCESS/ERROR) + log-stats aggregation
 ├── S3Service.php       All S3 operations (bucket + object + folder + presigned/multipart + versioning/lock layer)
+├── PdfMergeService.php Wraps FPDI/FPDF to merge local PDF files
+├── pdf-lib/            Vendored FPDI + FPDF (MIT licensed, pure PHP, no Composer at runtime)
 ├── common.js           Shared JS helpers (API caller, formatters, toasts, preview renderer)
 ├── app.js              Main explorer front-end logic
 ├── admin.js            Admin dashboard front-end logic
@@ -177,6 +190,7 @@ s3-explorer/
 ├── large-upload.js     Large Upload Demo front-end logic
 ├── permissions.js      Permissions Matrix Demo front-end logic
 ├── versioning.js       Versioning & Immutability Demo front-end logic
+├── pdf-merge.js        PDF Merge Demo front-end logic
 ├── logs/
 │   └── s3-explorer.log   Rotating log file (auto-created, auto-rotates at 5MB)
 └── downloads/             Temp folder for GET downloads (auto-purged hourly)
