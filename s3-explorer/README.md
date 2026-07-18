@@ -60,7 +60,7 @@ Then open `http://localhost:8080` in your browser.
 
 ## UI Panels
 
-- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), **Admin** and **Large Upload** links to the other two pages, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
+- **Header** — app name, active-bucket dropdown (populated live from `list_buckets`), an **Admin** link to the admin dashboard, and a ⚙ **Config** button that opens the in-browser settings modal (endpoint/region/keys/path-style, with a Test Connection button).
 - **Left sidebar** — bucket list (click to switch, `+` to create, hover-trash to delete), storage stats for the active bucket (total size, object count, folder count — auto-refreshes on bucket switch), and the last 10 recent operations with a ✓/✗ status badge and latency in ms.
 - **Main file browser** — clickable breadcrumb, a toolbar (Upload, New Folder, Refresh, Grid/List toggle), and a card or table view of folders and files. Click a folder to navigate in; click/checkbox/shift-click files to multi-select. Drag files from your desktop directly onto the panel to upload them.
 - **Contextual action bar** — appears at the bottom of the main panel once 1+ items are selected: single file gives Download/Copy/Move/Presigned URL/Info/Delete; a folder gives Open/Delete Folder (recursive); multiple items give Bulk Delete.
@@ -71,11 +71,10 @@ Then open `http://localhost:8080` in your browser.
   - **Bucket detail** — click a bucket to see its region, versioning status, creation date, total size, file count, and folder count, plus a paginated, prefix-filterable table of *every* object in the bucket (flat, recursive — not folder-by-folder).
   - **Object detail** — click any object row to see its full metadata (key, bucket, size, content-type, ETag, last-modified, storage class) alongside an inline preview (images, video, audio, PDF, and text/JSON render directly in the page; anything else falls back to a Download button), plus Copy Presigned URL and Delete actions.
   - Navigation uses real URLs (`admin.php?view=bucket&bucket=...`), so back/forward and bookmarking work as expected.
-- **Large Upload Demo** (`large-upload.php`) — a separate page demonstrating secure, direct browser-to-S3 uploads for large files (see below).
 
 ## Large Upload Demo (direct-to-S3 multipart)
 
-`large-upload.php` uploads files **straight from the browser to your S3-compatible endpoint** — your AWS secret key is never sent to the browser, and file bytes never pass through the PHP server. This is the same pattern used by the AWS Console, Dropbox, etc., and it sidesteps PHP's `upload_max_filesize`/`post_max_size`/memory limits entirely:
+`large-upload.php` is a standalone, additional page — it's intentionally **not** linked from the Explorer's or Admin's navigation, and doesn't touch the main Explorer's Upload flow. Open it directly at `/large-upload.php` when you want to demo it. It uploads files **straight from the browser to your S3-compatible endpoint** — your AWS secret key is never sent to the browser, and file bytes never pass through the PHP server. This is the same pattern used by the AWS Console, Dropbox, etc., and it sidesteps PHP's `upload_max_filesize`/`post_max_size`/memory limits entirely:
 
 1. The PHP backend (which holds your real credentials) generates short-lived, single-purpose **presigned URLs** — one URL for a small file, or one URL per chunk for a large file.
 2. The browser `PUT`s the file (or each chunk) directly to the S3 endpoint using those URLs.
