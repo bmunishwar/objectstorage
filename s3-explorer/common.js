@@ -21,7 +21,19 @@ async function api(action, params = {}, options = {}) {
     if (!options.suppressErrorToast) toast('error', `Network error: ${err.message}`);
     throw err;
   }
-  const json = await res.json();
+
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    // Server returned something that isn't valid JSON (proxy error page, etc.) — surface it
+    // through the same toast/tracking path as every other failure, not as an unhandled rejection.
+    if (window.onApiResult) window.onApiResult(action, false, performance.now() - start);
+    const message = `Unexpected response from server (HTTP ${res.status}).`;
+    if (!options.suppressErrorToast) toast('error', message);
+    throw new Error(message);
+  }
+
   if (window.onApiResult) window.onApiResult(action, json.success, json.operation_ms ?? (performance.now() - start));
   if (!json.success) {
     if (!options.suppressErrorToast) toast('error', json.error || `${action} failed`);

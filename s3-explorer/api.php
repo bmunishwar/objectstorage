@@ -7,6 +7,51 @@ declare(strict_types=1);
 require_once __DIR__ . '/Logger.php';
 
 header('Content-Type: application/json');
+ob_start();
+
+// $logger starts null and is populated once config.php loads below; every handler here
+// tolerates that via the nullsafe operator, since these can fire before it's ready.
+$logger = null;
+
+/**
+ * Emits a clean JSON error and exits. This is the last-resort safety net — registered as the
+ * global exception/error/shutdown handler below — that guarantees no raw PHP output, warning,
+ * or stack trace ever reaches the client as broken JSON, no matter where it originates.
+ */
+function respondFatal(string $message, ?Logger $logger): void
+{
+    $logger?->error($message);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+    }
+    if (ob_get_level() > 0) {
+        ob_clean();
+    }
+    echo json_encode(['success' => false, 'data' => [], 'error' => $message, 'operation_ms' => 0], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+set_exception_handler(static function (Throwable $e) use (&$logger): void {
+    respondFatal($e->getMessage(), $logger);
+});
+
+set_error_handler(static function (int $severity, string $message, string $file = '', int $line = 0) use (&$logger): bool {
+    if (!(error_reporting() & $severity)) {
+        return true; // respects both the error_reporting setting and @-suppression
+    }
+    $detail = "PHP: {$message} in {$file}:{$line}";
+    $isSerious = ($severity & (E_WARNING | E_USER_WARNING | E_USER_ERROR | E_RECOVERABLE_ERROR)) !== 0;
+    $isSerious ? $logger?->error($detail) : $logger?->debug($detail);
+    return true; // never let PHP print this into the response body itself
+});
+
+register_shutdown_function(static function () use (&$logger): void {
+    $error = error_get_last();
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        respondFatal("Fatal error: {$error['message']} in {$error['file']}:{$error['line']}", $logger);
+    }
+});
 
 $config = require __DIR__ . '/config.php';
 $logger = new Logger($config['log_file'], $config['log_level']);
@@ -15,12 +60,29 @@ $logger = new Logger($config['log_file'], $config['log_level']);
 function respond(bool $success, array $data = [], string $error = '', float $startedAt = 0.0): void
 {
     $elapsedMs = $startedAt > 0 ? (microtime(true) - $startedAt) * 1000 : 0.0;
+    if (ob_get_level() > 0) {
+        ob_clean();
+    }
     echo json_encode([
         'success'      => $success,
         'data'         => $data,
         'error'        => $error,
         'operation_ms' => round($elapsedMs, 1),
     ], JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+/** Streams a raw (non-JSON) file/text response — used by the download and log-export actions. */
+function respondRaw(string $contentType, string $disposition, string $filename, string $body): void
+{
+    if (ob_get_level() > 0) {
+        ob_clean();
+    }
+    header_remove('Content-Type');
+    header('Content-Type: ' . $contentType);
+    header('Content-Disposition: ' . $disposition . '; filename="' . $filename . '"');
+    header('Content-Length: ' . (string) strlen($body));
+    echo $body;
     exit;
 }
 
@@ -111,12 +173,7 @@ try {
         $elapsedMs = (microtime(true) - $startedAt) * 1000;
         $logger->opSuccess('DOWNLOAD', $key, $elapsedMs);
 
-        header_remove('Content-Type');
-        header('Content-Type: ' . $result['content_type']);
-        header('Content-Disposition: ' . $disposition . '; filename="' . basename($key) . '"');
-        header('Content-Length: ' . (string) $result['size']);
-        echo $result['body'];
-        exit;
+        respondRaw($result['content_type'], $disposition, basename($key), $result['body']);
     }
 
     if ($action === 'download_object_version') {
@@ -129,22 +186,13 @@ try {
         $elapsedMs = (microtime(true) - $startedAt) * 1000;
         $logger->opSuccess('DOWNLOAD_OBJECT_VERSION', "{$key}@{$versionId}", $elapsedMs);
 
-        header_remove('Content-Type');
-        header('Content-Type: ' . $result['content_type']);
-        header('Content-Disposition: ' . $disposition . '; filename="' . basename($key) . '"');
-        header('Content-Length: ' . (string) $result['size']);
-        echo $result['body'];
-        exit;
+        respondRaw($result['content_type'], $disposition, basename($key), $result['body']);
     }
 
     if ($action === 'get_logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
         $lines = $logger->getLastLines((int) ($params['lines'] ?? 1000));
 
-        header_remove('Content-Type');
-        header('Content-Type: text/plain');
-        header('Content-Disposition: attachment; filename="s3-explorer.log"');
-        echo implode(PHP_EOL, $lines) . PHP_EOL;
-        exit;
+        respondRaw('text/plain', 'attachment', 's3-explorer.log', implode(PHP_EOL, $lines) . PHP_EOL);
     }
 
     $data = match ($action) {

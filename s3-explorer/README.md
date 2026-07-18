@@ -133,6 +133,15 @@ Pick files from **From This Bucket** (loads and filters the bucket's objects dow
 
 *Limitation inherited from FPDI's free tier:* it can't import pages from encrypted PDFs or PDFs using PDF 2.0-only features — covers the vast majority of real-world files, but worth knowing before a demo.
 
+## Error Handling & Logging
+
+Every page shares one JSON API (`api.php`), so its error handling is centralized rather than repeated per action:
+
+- **Every action** is wrapped by a single `try`/`catch (Throwable $e)` that logs the failure (`Logger::opFailure()`) and returns `{success:false, error:"..."}` — no action handler needs its own catch block, and no exception from `S3Service`/`PdfMergeService`/the AWS SDK itself can reach the browser unhandled.
+- **Below that**, a global safety net (`set_error_handler` + `set_exception_handler` + `register_shutdown_function`, all registered before anything else runs) catches the categories a plain `try`/`catch` can't: PHP warnings/notices/deprecations (logged, never printed — so they can't corrupt the JSON response body), anything thrown during bootstrap before the main `try` even exists (e.g. a broken `config.php`), and genuine fatal errors. Combined with an output buffer that's discarded (`ob_clean()`) right before every real response is written, the response body is guaranteed to be exactly one clean JSON payload (or exactly one raw file stream for downloads) — never a mix of stray warning text and JSON.
+- **Client-side**, `common.js`'s shared `api()` helper mirrors this: network failures, non-2xx/malformed responses, and `{success:false}` results all funnel through the same toast + Recent-Operations-tracking path, so a broken response never surfaces as a silent, unhandled JS error instead of a visible toast.
+- **Logging** is one format everywhere (`Logger.php`): `[timestamp] [LEVEL] message`, auto-rotating at 5MB, single-line even for multi-line exception messages (embedded newlines are collapsed so the Reports page's log parser and the Live Log Console both stay reliable line-per-entry). PHP warnings/notices caught by the safety net above go through the same logger at DEBUG (routine) or ERROR (warning-or-worse) level, so they show up in the Live Log Console like any other event instead of vanishing.
+
 ## Supported S3-Compatible Providers
 
 | Provider | Example Endpoint | Path-style required? |
@@ -158,7 +167,7 @@ Pick files from **From This Bucket** (loads and filters the bucket's objects dow
 | Buckets list empty but you know buckets exist | Wrong `path_style` setting | Toggle path-style in the Config modal and retry |
 | Upload hangs or fails on large files | PHP `upload_max_filesize` / `post_max_size` too low | Raise both in `php.ini` (or pass `-d upload_max_filesize=... -d post_max_size=...` to `php -S`) |
 | Blank/unstyled page | No internet access to `cdn.tailwindcss.com` (or your CDN blocked by a firewall/proxy) | Ensure outbound HTTPS to the Tailwind CDN is allowed, or self-host Tailwind |
-| Raw PHP error/stack trace in browser | Should never happen — `api.php` catches all `Throwable`s | File a bug; check `logs/s3-explorer.log` for the real error in the meantime |
+| Raw PHP error/stack trace/warning text in browser | Should never happen — see [Error Handling & Logging](#error-handling--logging) | File a bug; check `logs/s3-explorer.log` for the real error in the meantime |
 | Presigned URL doesn't work when opened | Clock skew between this server and the S3 endpoint | Sync server time (NTP); presigned URLs are time-signed |
 | Large Upload Demo: chunk `PUT` fails with a network/CORS error | Bucket has no CORS rule for this origin | Use the **Fix CORS automatically** button on `large-upload.php`, or configure it manually (see [above](#large-upload-demo-direct-to-s3-multipart)) |
 | Large Upload Demo: "response was missing an ETag header" | CORS rule exists but doesn't expose `ETag` | Re-run **Fix CORS automatically** (it sets `ExposeHeaders: [ETag]`), or add that to your existing CORS rule manually |
