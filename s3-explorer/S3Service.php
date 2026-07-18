@@ -475,6 +475,179 @@ final class S3Service
     }
 
     // ----------------------------------------------------------------
+    // Versioning & Object Lock
+    // ----------------------------------------------------------------
+
+    /** Creates a new bucket with Object Lock enabled (only possible at creation time; this also auto-enables versioning). */
+    public function createBucketWithObjectLock(string $name): array
+    {
+        $this->client->createBucket([
+            'Bucket'                    => $name,
+            'ObjectLockEnabledForBucket' => true,
+        ]);
+        $this->client->waitUntil('BucketExists', ['Bucket' => $name]);
+
+        return ['name' => $name, 'object_lock_enabled' => true];
+    }
+
+    /** Enables versioning on an existing bucket (does not enable Object Lock — that requires bucket creation). */
+    public function enableBucketVersioning(string $bucket): array
+    {
+        $this->client->putBucketVersioning([
+            'Bucket'                  => $bucket,
+            'VersioningConfiguration' => ['Status' => 'Enabled'],
+        ]);
+
+        return ['bucket' => $bucket, 'versioning_status' => 'Enabled'];
+    }
+
+    /** Returns a bucket's versioning status and whether Object Lock is enabled. */
+    public function getVersioningAndLockStatus(string $bucket): array
+    {
+        $versioning = $this->client->getBucketVersioning(['Bucket' => $bucket]);
+
+        $objectLockEnabled = false;
+        try {
+            $lockConfig = $this->client->getObjectLockConfiguration(['Bucket' => $bucket]);
+            $objectLockEnabled = ($lockConfig['ObjectLockConfiguration']['ObjectLockEnabled'] ?? '') === 'Enabled';
+        } catch (S3Exception $e) {
+            if ($e->getAwsErrorCode() !== 'ObjectLockConfigurationNotFoundError') {
+                throw $e;
+            }
+        }
+
+        return [
+            'bucket'              => $bucket,
+            'versioning_status'   => $versioning['Status'] ?? 'Disabled',
+            'object_lock_enabled' => $objectLockEnabled,
+        ];
+    }
+
+    /** Lists all versions (and delete markers) of objects under a prefix. */
+    public function listObjectVersions(string $bucket, string $prefix = ''): array
+    {
+        $versions = [];
+
+        $paginator = $this->client->getPaginator('ListObjectVersions', ['Bucket' => $bucket, 'Prefix' => $prefix]);
+        foreach ($paginator as $page) {
+            foreach ($page['Versions'] ?? [] as $version) {
+                $versions[] = [
+                    'key'             => $version['Key'],
+                    'version_id'      => $version['VersionId'],
+                    'is_latest'       => (bool) $version['IsLatest'],
+                    'size'            => (int) $version['Size'],
+                    'last_modified'   => $version['LastModified']->format(DATE_ATOM),
+                    'is_delete_marker' => false,
+                ];
+            }
+            foreach ($page['DeleteMarkers'] ?? [] as $marker) {
+                $versions[] = [
+                    'key'             => $marker['Key'],
+                    'version_id'      => $marker['VersionId'],
+                    'is_latest'       => (bool) $marker['IsLatest'],
+                    'size'            => 0,
+                    'last_modified'   => $marker['LastModified']->format(DATE_ATOM),
+                    'is_delete_marker' => true,
+                ];
+            }
+        }
+
+        usort($versions, static fn (array $a, array $b): int => strcmp($b['last_modified'], $a['last_modified']));
+
+        return ['bucket' => $bucket, 'prefix' => $prefix, 'versions' => $versions];
+    }
+
+    /** Downloads one specific version of an object. */
+    public function downloadObjectVersion(string $bucket, string $key, string $versionId): array
+    {
+        $result = $this->client->getObject([
+            'Bucket'    => $bucket,
+            'Key'       => $key,
+            'VersionId' => $versionId,
+        ]);
+
+        return [
+            'body'         => (string) $result['Body'],
+            'content_type' => $result['ContentType'] ?? 'application/octet-stream',
+            'size'         => (int) ($result['ContentLength'] ?? 0),
+        ];
+    }
+
+    /** Permanently deletes one specific version. Expected to be refused by S3 if retention/legal-hold is active. */
+    public function deleteObjectVersion(string $bucket, string $key, string $versionId): array
+    {
+        $this->client->deleteObject([
+            'Bucket'    => $bucket,
+            'Key'       => $key,
+            'VersionId' => $versionId,
+        ]);
+
+        return ['bucket' => $bucket, 'key' => $key, 'version_id' => $versionId, 'deleted' => true];
+    }
+
+    /** Applies a retention lock (GOVERNANCE or COMPLIANCE mode) to one object version. */
+    public function putObjectRetention(string $bucket, string $key, string $versionId, string $mode, string $retainUntil): array
+    {
+        $this->client->putObjectRetention([
+            'Bucket'    => $bucket,
+            'Key'       => $key,
+            'VersionId' => $versionId,
+            'Retention' => [
+                'Mode'            => $mode,
+                'RetainUntilDate' => $retainUntil,
+            ],
+        ]);
+
+        return ['bucket' => $bucket, 'key' => $key, 'version_id' => $versionId, 'mode' => $mode, 'retain_until' => $retainUntil];
+    }
+
+    /** Returns the current retention setting for an object version, if any. */
+    public function getObjectRetention(string $bucket, string $key, string $versionId): array
+    {
+        try {
+            $result = $this->client->getObjectRetention(['Bucket' => $bucket, 'Key' => $key, 'VersionId' => $versionId]);
+            return [
+                'mode'         => $result['Retention']['Mode'] ?? null,
+                'retain_until' => isset($result['Retention']['RetainUntilDate'])
+                    ? $result['Retention']['RetainUntilDate']->format(DATE_ATOM)
+                    : null,
+            ];
+        } catch (S3Exception $e) {
+            if ($e->getAwsErrorCode() === 'NoSuchObjectLockConfiguration') {
+                return ['mode' => null, 'retain_until' => null];
+            }
+            throw $e;
+        }
+    }
+
+    /** Turns a legal hold on or off for an object version (independent of retention mode/date). */
+    public function putObjectLegalHold(string $bucket, string $key, string $versionId, bool $on): array
+    {
+        $this->client->putObjectLegalHold([
+            'Bucket'    => $bucket,
+            'Key'       => $key,
+            'VersionId' => $versionId,
+            'LegalHold' => ['Status' => $on ? 'ON' : 'OFF'],
+        ]);
+
+        return ['bucket' => $bucket, 'key' => $key, 'version_id' => $versionId, 'legal_hold' => $on];
+    }
+
+    /** Returns the current legal-hold status for an object version. */
+    public function getObjectLegalHold(string $bucket, string $key, string $versionId): array
+    {
+        try {
+            $result = $this->client->getObjectLegalHold(['Bucket' => $bucket, 'Key' => $key, 'VersionId' => $versionId]);
+            return ['legal_hold' => ($result['LegalHold']['Status'] ?? 'OFF') === 'ON'];
+        } catch (S3Exception $e) {
+            if ($e->getAwsErrorCode() === 'NoSuchObjectLockConfiguration') {
+                return ['legal_hold' => false];
+            }
+            throw $e;
+        }
+    }
+
+    // ----------------------------------------------------------------
     // Folder (prefix) operations
     // ----------------------------------------------------------------
 

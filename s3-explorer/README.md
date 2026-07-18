@@ -96,6 +96,33 @@ Defaults (in `config.php`, overridable via env-style edits): 8MB part size, 5GB 
 
 *Not included in this version:* resuming an interrupted upload after a page reload (would require reconciling already-uploaded parts via S3's `ListParts` API on reload) — today, a page refresh mid-upload means starting that file over.
 
+## Permissions Matrix Demo (`permissions.php`)
+
+Standalone, unlinked page (same treatment as Large Upload) that **live-probes real S3 permissions** — it doesn't guess or document what a user *should* be able to do, it actually tries.
+
+**Setup:** add real, separately-provisioned AWS/MinIO credentials for 2-4 demo identities (each with its own IAM/bucket policy, set up by you outside this app) to `permission-users.local.php`:
+
+```php
+<?php
+declare(strict_types=1);
+return [
+    'admin'    => ['label' => 'Admin', 'description' => 'Full access', 'endpoint' => '...', 'region' => 'us-east-1', 'access_key' => '...', 'secret_key' => '...', 'path_style' => true],
+    'readonly' => ['label' => 'Read-Only', 'description' => 'List and read only', 'endpoint' => '...', 'region' => 'us-east-1', 'access_key' => '...', 'secret_key' => '...', 'path_style' => true],
+];
+```
+
+(See the doc comment in `permission-users.php` for the full expected shape.) This file is git-ignored — it holds real credentials.
+
+Pick a bucket and click **Run Matrix**: for every configured identity, the page attempts List Buckets, List Objects, Read Object, Upload Object, Delete Object, and Bucket Info, and shows a real ✓/✗ per cell — denials show the actual AWS/MinIO error on hover. The upload/delete probes use a self-cleaning `_permission_probe/<user>-<timestamp>.txt` key so they don't leave clutter behind (or do, harmlessly, if the identity being tested lacks delete permission — which the matrix itself will also correctly show as denied).
+
+## Versioning & Immutability Demo (`versioning.php`)
+
+Standalone, unlinked page demonstrating S3 bucket versioning and true immutability via **S3 Object Lock** (WORM — Write Once Read Many).
+
+Object Lock can only be enabled when a bucket is *created* — it cannot be retrofitted onto an existing bucket. The page's first section lets you either create a fresh, dedicated Object-Lock-enabled bucket, or select an existing bucket (which can still demo plain versioning via **Enable Versioning**, just not true immutability).
+
+Upload the same filename twice to generate multiple versions, then work through the demo: the versions table lists every version (and delete marker) with View/Manage Lock/Delete actions; the Immutability Controls section lets you set a retention mode (Governance/Compliance) + retain-until date, or toggle a legal hold, on a specific version. The payoff is the **"Try to Delete This Version"** button — with retention or legal hold active, S3 itself refuses the delete, and the app deliberately shows that refusal as a *success* message (🔒 *Blocked as expected*), since the denial is the actual demonstration, not a normal error.
+
 ## Supported S3-Compatible Providers
 
 | Provider | Example Endpoint | Path-style required? |
@@ -136,15 +163,20 @@ s3-explorer/
 ├── admin.php           Admin dashboard UI shell (buckets → bucket → object drill-down)
 ├── reports.php         Reports & Monitoring UI shell (operations/health + storage/capacity)
 ├── large-upload.php    Large Upload Demo UI shell (direct-to-S3 multipart)
+├── permissions.php     Permissions Matrix Demo UI shell (live per-user probes)
+├── versioning.php      Versioning & Immutability Demo UI shell (Object Lock/WORM)
 ├── api.php             All backend operations (JSON in/out)
 ├── config.php          Provider config (env vars, with config.local.php override)
+├── permission-users.php   Demo-user credential roster loader (with permission-users.local.php override)
 ├── Logger.php          Leveled logger (DEBUG/INFO/SUCCESS/ERROR) + log-stats aggregation
-├── S3Service.php       All S3 operations (bucket + object + folder + presigned/multipart layer)
+├── S3Service.php       All S3 operations (bucket + object + folder + presigned/multipart + versioning/lock layer)
 ├── common.js           Shared JS helpers (API caller, formatters, toasts, preview renderer)
 ├── app.js              Main explorer front-end logic
 ├── admin.js            Admin dashboard front-end logic
 ├── reports.js          Reports & Monitoring front-end logic
 ├── large-upload.js     Large Upload Demo front-end logic
+├── permissions.js      Permissions Matrix Demo front-end logic
+├── versioning.js       Versioning & Immutability Demo front-end logic
 ├── logs/
 │   └── s3-explorer.log   Rotating log file (auto-created, auto-rotates at 5MB)
 └── downloads/             Temp folder for GET downloads (auto-purged hourly)

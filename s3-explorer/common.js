@@ -1,8 +1,13 @@
 // S3 Explorer — shared helpers used by both index.php (app.js) and admin.php (admin.js).
 'use strict';
 
-/** Calls the JSON API with an action and params, returns the parsed response data. */
-async function api(action, params = {}) {
+/**
+ * Calls the JSON API with an action and params, returns the parsed response data.
+ * Pass { suppressErrorToast: true } when the caller wants to render a failure itself
+ * (e.g. the Versioning demo's "try to delete a locked version" button, where a denial
+ * is the successful demo outcome, not a red error).
+ */
+async function api(action, params = {}, options = {}) {
   const start = performance.now();
   let res;
   try {
@@ -13,13 +18,13 @@ async function api(action, params = {}) {
     });
   } catch (err) {
     if (window.onApiResult) window.onApiResult(action, false, performance.now() - start);
-    toast('error', `Network error: ${err.message}`);
+    if (!options.suppressErrorToast) toast('error', `Network error: ${err.message}`);
     throw err;
   }
   const json = await res.json();
   if (window.onApiResult) window.onApiResult(action, json.success, json.operation_ms ?? (performance.now() - start));
   if (!json.success) {
-    toast('error', json.error || `${action} failed`);
+    if (!options.suppressErrorToast) toast('error', json.error || `${action} failed`);
     throw new Error(json.error || `${action} failed`);
   }
   return json.data;
